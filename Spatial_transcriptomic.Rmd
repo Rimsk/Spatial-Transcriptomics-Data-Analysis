@@ -1,0 +1,373 @@
+---
+title: "Spatial_transcriptomic_pipeline"
+author: "Rimpi Khurana"
+date: "2024-11-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(SpatialExperiment)
+library(STexampleData)
+library(ggspavis)
+library(ggplot2)
+library(scater)
+library(scran)
+library(igraph)
+library(pheatmap)
+library(ggExtra)
+
+```
+
+# Load the object
+```{r echo = FALSE}
+spe <- Visium_humanDLPFC()
+```
+
+## Check the object structure 
+```{r echo = FALSE}
+spe
+
+```
+## Check number of features/genes (rows) and spots (columns)
+```{r echo = FALSE}
+dim(spe)
+```
+
+## Check names of 'assay' tables
+```{r echo = FALSE}
+assayNames(spe)
+```
+
+# Counts table and gene metadata
+#counts table (object of class dgTMatrix which is a sparse matrix)
+```{r echo = FALSE}
+
+assay(spe)[1:6,1:4]
+
+```
+#genes with some level of expression
+```{r echo = FALSE}
+
+assay(spe)[20:40, 2000:2010]
+assay(spe)[33488:33508, 2000:2010]
+
+```
+
+## genes metadata
+```{r echo = FALSE}
+head(rowData(spe))
+```
+
+# Coordinates table and spot metadata
+
+## Check the spatial coordinates
+
+```{r echo = FALSE}
+head(spatialCoords(spe))
+```
+
+## spot-level metadata
+```{r echo = FALSE}
+head(colData(spe))
+```
+
+## Have a look at the image metadata
+```{r echo = FALSE}
+imgData(spe)
+```
+
+## retrieve the image
+```{r echo = FALSE}
+spi <- getImg(spe)
+
+## "plot" the image
+plot(imgRaster(spi))
+```
+
+
+#The position of a point in an image does not map directly to the spot location in cartesian coordinates, as it is the top-left of an image that is (0,0), not the bottom-left. In order to manage this, we need to transform the y-axis coordinates.
+
+
+
+
+
+```{r echo = FALSE}
+## "Plot" the image
+plot(imgRaster(spi))
+## Extract the spot locations
+spot_coords <- spatialCoords(spe) %>% as.data.frame
+
+
+## Scale by low-res factor
+lowres_scale <- imgData(spe)[imgData(spe)$image_id == 'lowres', 'scaleFactor']
+
+
+spot_coords$x_axis <- spot_coords$pxl_col_in_fullres * lowres_scale
+spot_coords$y_axis <- spot_coords$pxl_row_in_fullres * lowres_scale
+## lowres image is 600x600 pixels
+dim(imgRaster(spi))
+
+```
+
+## flip the Y axis
+```{r echo = FALSE}
+spot_coords$y_axis <- abs(spot_coords$y_axis - (ncol(imgRaster(spi)) + 1))
+#points(x=spot_coords$x_axis, y=spot_coords$y_axis)
+
+
+# Create an empty plot with appropriate limits and labels
+# plot(spot_coords$x_axis, spot_coords$y_axis, 
+#       type = "n",               # Empty plot, no points yet
+#       xlab = "X Axis", 
+#       ylab = "Y Axis", 
+#       xlim = range(spot_coords$x_axis), 
+#       ylim = range(spot_coords$y_axis))
+# 
+# # Now, add the points
+# points(x = spot_coords$x_axis, y = spot_coords$y_axis, col = "red", pch = 16)
+
+
+ggplot(mapping = aes(1:600, 1:600)) +
+    annotation_raster(imgRaster(spi), xmin = 1, xmax = 600, ymin = 1, ymax = 600) +
+    geom_point(data=spot_coords, aes(x=x_axis, y=y_axis), alpha=0.2) + xlim(1, 600) + ylim(1, 600) +
+    coord_fixed() + 
+    theme_void()
+
+
+```
+
+## Add the annotation to the coordinate data frame
+#To identify spot is “on tissue” or not can be used to colour the spots
+```{r echo = FALSE}
+## Add the annotation to the coordinate data frame
+spot_coords$on_tissue <- as.logical(colData(spe)$in_tissue)
+
+ggplot(mapping = aes(1:600, 1:600)) +
+  annotation_raster(imgRaster(spi), xmin = 1, xmax = 600, ymin = 1, ymax = 600) +
+  geom_point(data=spot_coords, aes(x=x_axis, y=y_axis, colour=on_tissue), alpha=0.2) + xlim(1, 600) + ylim(1, 600) +
+  coord_fixed() + 
+  theme_void()
+
+
+```
+
+
+```{r echo = FALSE}
+plotSpots(spe, in_tissue = NULL, annotate='in_tissue', size=0.5)
+
+```
+
+
+```{r echo = FALSE}
+
+## Plot spatial coordinates without annotations
+plotSpots(spe)
+
+## Plot spatial coordinates with annotations
+plotSpots(spe,
+          annotate = "ground_truth")
+```
+
+
+# Calculating QC metrics
+
+```{r echo = FALSE}
+
+## Dataset dimensions before the filtering
+dim(spe)
+
+```
+
+## Subset to keep only on-tissue spots
+```{r echo = FALSE}
+spe <- spe[, colData(spe)$in_tissue == 1]
+dim(spe)
+```
+
+#quality “trim” the dataset is to calculate the percentage per spot of mitochodrial gene expression and store this information inside the colData
+#identify the mitochrondrial genes - their gene names start with “MT-” or “mt-”
+```{r echo = FALSE}
+## Classify genes as "mitochondrial" (is_mito == TRUE) 
+## or not (is_mito == FALSE)
+is_mito <- grepl("(^MT-)|(^mt-)", rowData(spe)$gene_name)
+rowData(spe)$gene_name[is_mito]
+
+```
+
+
+#proportion of reads in a spot’s library
+```{r echo = FALSE}
+## Calculate per-spot QC metrics and store in colData
+spe <- addPerCellQC(spe, subsets = list(mito = is_mito))
+head(colData(spe))
+
+```
+
+# Library size threshold plot
+#current plot the library sizes looks good and evenly distributed.
+```{r echo = FALSE}
+## Density and histogram of library sizes
+ggplot(data = as.data.frame(colData(spe)),
+       aes(x = sum)) +
+  geom_histogram(aes(y = after_stat(density)), 
+                 colour = "black", 
+                 fill = "grey") +
+  geom_density(alpha = 0.5,
+               adjust = 1.0,
+               fill = "#A0CBE8",
+               colour = "#4E79A7") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) + 
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) + 
+  xlab("Library size") + 
+  ylab("Density") + 
+  theme_classic()
+
+
+```
+
+#The horizontal red line (argument threshold in the plotQC function) shows a first guess at a possible filtering threshold for library size based on the above histogram.
+```{r echo = FALSE}
+## Scatter plot, library size against number of cells per spot
+plotQC(spe, type = "scatter", 
+       metric_x = "cell_count", metric_y = "sum", 
+       threshold_y = 700)
+
+
+```
+#alternative plot using ggplot 
+
+```{r echo = FALSE}
+
+p = ggplot(as.data.frame(colData(spe)), aes(x=cell_count, y=sum)) +
+  geom_point(size=0.5) + 
+  geom_smooth(se=FALSE) +
+  geom_hline(yintercept = 700, colour='red') + 
+  theme_minimal()
+ggMarginal(p, type='histogram', margins = 'both')
+
+```
+# It is important to look at the number of spots that are left out of the dataset by this choice of cut-off value
+#look at their putative spatial patterns
+#filtered out spots with biological relevance, then we should observe some patterns on the tissue map that correlate with some of the known biological structures of the tissue. If we do observe such a phenomenon, we have probably set our threshold too high (i.e. not permissive enough).
+```{r echo = FALSE}
+
+## Select library size threshold
+qc_lib_size <- colData(spe)$sum < 700
+## Check how many spots are filtered out
+table(qc_lib_size)
+
+ ## Add threshold in colData
+colData(spe)$qc_lib_size <- qc_lib_size
+
+## Check putative spatial patterns of removed spots
+plotQC(spe, type = "spots", 
+       discard = "qc_lib_size")
+
+```
+
+# Number of expressed genes
+
+#plot a histogram of the number of expressed genes across spots
+#summary: A gene is “expressed” in a spot if it has at least one count in it
+```{r echo = FALSE}
+## Density and histogram of expressed genes
+ggplot(data = as.data.frame(colData(spe)),
+       aes(x = detected)) +
+  geom_histogram(aes(y = after_stat(density)), 
+                 colour = "black", 
+                 fill = "grey") +
+  geom_density(alpha = 0.5,
+               adjust = 1.0,
+               fill = "#A0CBE8",
+               colour = "#4E79A7") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) + 
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) + 
+  xlab("Genes expressed in each spot") + 
+  ylab("Density") + 
+  theme_classic()
+```
+# plot number of expressed genes vs. number of cells per spot
+```{r echo = FALSE}
+
+p = ggplot(as.data.frame(colData(spe)), aes(x=cell_count, y=detected)) +
+  geom_point(size=0.5) + 
+  geom_smooth(se=FALSE) +
+  geom_hline(yintercept = 500, colour='red') + 
+  theme_minimal()
+ggMarginal(p, type='histogram', margins = 'both')
+```
+
+#we apply the chosen threshold to flag spots with (in this case) fewer than 500 expressed genes.
+### Select expressed genes threshold
+```{r echo = FALSE}
+## Select expressed genes threshold
+qc_detected <- colData(spe)$detected < 500
+## Check how many spots are filtered out
+table(qc_detected)
+
+
+```
+
+```{r echo = FALSE}
+## Add threshold in colData
+colData(spe)$qc_detected <- qc_detected
+
+## Check for putative spatial pattern of removed spots
+plotQC(spe, type = "spots", 
+       discard = "qc_detected")
+
+```
+
+#  Percentage of mitochondrial expression
+## Density and histogram of percentage of mitochondrial expression
+```{r echo = FALSE}
+ggplot(data = as.data.frame(colData(spe)),
+       aes(x = subsets_mito_percent)) +
+  geom_histogram(aes(y = after_stat(density)), 
+                 colour = "black", 
+                 fill = "grey") +
+  geom_density(alpha = 0.5,
+               adjust = 1.0,
+               fill = "#A0CBE8",
+               colour = "#4E79A7") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) + 
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) + 
+  xlab("Percentage of mitochondrial expression") + 
+  ylab("Density") + 
+  theme_classic()
+
+```
+# plot mitochondrial read proportion vs. number of cells per spot
+```{r echo = FALSE}
+# plot mitochondrial read proportion vs. number of cells per spot
+p = ggplot(as.data.frame(colData(spe)), aes(x=cell_count, y=subsets_mito_percent)) +
+  geom_point(size=0.5) + 
+  geom_smooth(se=FALSE) +
+  geom_hline(yintercept = 28, colour='red') + 
+  theme_minimal()
+ggMarginal(p, type='histogram')
+
+
+```
+
+
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
