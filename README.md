@@ -1,4 +1,4 @@
-# Spatial-Transcriptomics-Data-Analysis
+# Spatial-Transcriptomics-Data-Analysis (Visium HD)
 
 This repository contains R code for the analysis of spatial transcriptomics data. It includes a set of tools and scripts to process, analyze, and visualize spatially-resolved gene expression data. The goal is to offer a comprehensive pipeline for working with spatial transcriptomics datasets, allowing users to explore gene expression patterns within tissue sections while preserving their spatial context.
 
